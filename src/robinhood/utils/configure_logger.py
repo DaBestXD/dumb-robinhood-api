@@ -1,7 +1,8 @@
 import logging
+from enum import Enum
 
-MISSING = object()
-_MISSING = object
+_MISSING = Enum("_MISSING", "MISSING")
+MISSING = _MISSING.MISSING
 
 
 def configure_logger(

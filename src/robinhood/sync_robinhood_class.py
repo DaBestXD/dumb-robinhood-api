@@ -454,3 +454,10 @@ class Robinhood(_CoreRobinhood):
         Returns an AccountValue dataclass
         """
         return self._run(self._get_account_value(acc_id))
+
+    def get_all_instruments(self) -> list[StockInfo] | None:
+        """
+        (Warning) This function is expensive to run
+        Returns all stocks on robinhood includes untradable stocks
+        """
+        return self._run(self._get_all_instruments())

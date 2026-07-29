@@ -562,3 +562,20 @@ class MarketDataImpl(TypingBase):
             result = await self.__resolve_UUID_repr_to_id(item)
             logger.debug("UUID resolve result: %s", result)
             return result
+
+    async def _get_all_instruments(self) -> list[StockInfo] | None:
+        # TODO: Add caching later...
+        """
+        [Public]
+        (Warning) This function is expensive to run
+        Returns all stocks on robinhood includes untradable stocks
+        """
+        res_json = await self._async_http_client._get(API_INSTRUMENTS)
+        stock_info_list = [StockInfo.from_json(s) for s in res_json if s]
+        if not stock_info_list:
+            # this should never return 0 items
+            return None
+        if self._db_cache:
+            for s in stock_info_list:
+                self._db_cache.insert_stock_info(s)
+        return stock_info_list

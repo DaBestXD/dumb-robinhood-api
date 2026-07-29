@@ -40,12 +40,11 @@ from robinhood.core._option_impl import OptionsImpl
 from robinhood.core._trading_impl import TradingImpl
 from robinhood.db_logic.option_cache import OptionCache
 from robinhood.robinhood_errors import TokenExtractionError
-from robinhood.utils.configure_logger import MISSING, configure_logger
+from robinhood.utils.configure_logger import _MISSING, MISSING, configure_logger
 from robinhood.utils.set_up_script import set_up
 from robinhood.utils.types import T
 
 logger = logging.getLogger(__name__)
-_MISSING = object
 
 
 class _CoreRobinhood(

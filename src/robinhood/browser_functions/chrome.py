@@ -46,7 +46,13 @@ class Chrome:
     auth_path: Path
     application_path: Path
     profile_dir_name: str
-    __slots__ = {"auth_path", "application_path", "profile_dir_name"}
+    profile_path: Path
+    __slots__ = {
+        "auth_path",
+        "application_path",
+        "profile_dir_name",
+        "profile_path",
+    }
 
     @classmethod
     def browser_factory(cls) -> Self:
@@ -56,12 +62,19 @@ class Chrome:
             case "win32":
                 chrome.auth_path = Chrome.get_auth_path(ChromePaths.WINDOWS)
                 chrome.application_path = Path(ChromePaths.WINDOWS_APP_PATH)
+                _app_data = Path(os.environ["LOCALAPPDATA"])
+                chrome.profile_path = _app_data / "Google/Chrome/User Data"
             case "darwin":
                 chrome.auth_path = Chrome.get_auth_path(ChromePaths.MAC)
                 chrome.application_path = Path(ChromePaths.MAC_APP_PATH)
+                chrome.profile_path = (
+                    HOME_DIR / "Library/Application Support/Google/Chrome"
+                )
+
             case "linux":
                 chrome.auth_path = Chrome.get_auth_path(ChromePaths.LINUX)
                 chrome.application_path = Path(ChromePaths.LINUX_APP_PATH)
+                chrome.profile_path = HOME_DIR / ".config/google-chrome"
             case _:
                 raise ValueError(f"Unsupported platform {sys.platform}")
         return chrome
@@ -96,7 +109,9 @@ class Chrome:
             for i in tokens:
                 if decode_jwt(i)["exp"] > time.time():
                     return f
-        raise RuntimeError("Unable to find a valid token path")
+        raise RuntimeError(
+            f"{Chrome.get_auth_path.__name__} failed to read an unexpired access token"  # noqa: E501
+        )
 
     def get_token(self, check_token: bool = False) -> str | None:
         """
@@ -104,12 +119,25 @@ class Chrome:
         at a time per browser
         """
         raw_f = self.auth_path.read_bytes().decode(errors="ignore")
-        tokens = re.findall(r'\\"access_token\\",\\"([^\\"]+)', raw_f)
+        tokens: list[str] = re.findall(
+            r'\\"access_token\\",\\"([^\\"]+)', raw_f
+        )
+        valid_tokens: list[str] = []
         for t in tokens:
             if decode_jwt(t)["exp"] > time.time():
                 if check_token and not is_token_valid(t):
                     raise RuntimeError("Token is not valid")
-                return t
+                valid_tokens.append(t)
+        if len(valid_tokens) > 1:
+            logger.debug("Multiple valid token found resolving conflict")
+            try:
+                tokens = [i for i in valid_tokens if is_token_valid(i)]
+                return tokens[0]
+            except IndexError:
+                if check_token:
+                    raise RuntimeError("Unable to find token from log file")
+                else:
+                    return None
         if check_token:
             raise RuntimeError("Unable to find token from log file")
         else:
@@ -123,17 +151,13 @@ class Chrome:
         args = [str(self.application_path)]
         if headless:
             args.extend(["--headless=new", "--disable-gpu"])
-        # No get is ok here if user doesn't have localapp data this
-        # will fail regardless of a get
-        app_data = os.environ["LOCALAPPDATA"]
-        data_dir = Path(app_data) / "Goodle/Chrome/User Data"
         args.extend(
             [
-                str(self.application_path),
                 "--no-first-run",
                 "--no-default-browser-check",
-                f"--user-data-dir={data_dir}",
+                f"--user-data-dir={self.profile_path}",
                 f"--profile-directory={profile_name}",
+                "https://robinhood.com",
             ]
         )
         return args
@@ -168,6 +192,7 @@ class Chrome:
                 proc = subprocess.Popen(
                     args, env=os.environ.copy(), **build_popen_kwargs()
                 )
+                break
             except BlockingIOError:
                 logger.debug("BlockingIOError retrying...")
         try:
@@ -181,37 +206,51 @@ class Chrome:
         proc: subprocess.Popen[bytes],
         timeout: float = 5,
     ) -> None:
+        if proc.poll() is not None:
+            logger.debug(
+                "Process %d already exited with %s",
+                proc.pid,
+                proc.returncode,
+            )
+            return
         if sys.platform == "win32":
-            subprocess.run(["taskkill", "/IM", "chrome.exe"])
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T"],
+                check=False,
+            )
             try:
                 proc.wait(timeout)
-            except subprocess.TimeoutExpired:
-                logger.debug("Timeout hit force killing process")
-                subprocess.run(["taskkill", "/IM", "chrome.exe", "/T", "/F"])
-                proc.wait()
-        else:
-            try:
-                os.killpg(proc.pid, 0)
-            except ProcessLookupError:
-                logger.debug(
-                    "Process %d already exited with %d",
-                    proc.pid,
-                    proc.returncode,
-                )
                 return None
-            for s in (signal.SIGTERM, signal.SIGKILL):
-                try:
-                    os.killpg(proc.pid, s)
-                except ProcessLookupError:
-                    logger.debug("Process closed already")
-                    try:
-                        os.killpg(proc.pid, 0)
-                        proc.wait()
-                        return None
-                    except ProcessLookupError:
-                        continue
-                try:
-                    proc.wait(timeout)
-                except subprocess.TimeoutExpired:
-                    logger.debug("Signal %d failed", s)
+            except subprocess.TimeoutExpired:
+                logger.debug(
+                    "SIGTERM equivalent timed out, force killing process"
+                )
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                check=False,
+            )
             proc.wait()
+            return None
+        # macOS / Linux
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            proc.poll()
+            logger.debug(
+                "Process group %d already exited",
+                proc.pid,
+            )
+            return None
+        try:
+            proc.wait(timeout)
+            return None
+        except subprocess.TimeoutExpired:
+            logger.debug(
+                "SIGTERM failed for process group %d, sending SIGKILL",
+                proc.pid,
+            )
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()

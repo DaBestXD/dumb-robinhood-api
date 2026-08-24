@@ -132,7 +132,7 @@ class Firefox:
                 capture_output=True,
                 text=True,
             )
-            return "no tasks" in check.stdout.lower()
+            return "no tasks" not in check.stdout.lower()
 
         else:
             check = subprocess.run(
@@ -215,29 +215,29 @@ class Firefox:
                 proc.wait()
         else:
             try:
-                os.killpg(proc.pid, 0)
+                os.killpg(proc.pid, signal.SIGTERM)
             except ProcessLookupError:
+                proc.poll()
                 logger.debug(
-                    "Process %d already exited with %d",
+                    "Process %d already exited with %s",
                     proc.pid,
                     proc.returncode,
                 )
-                return None
-            for s in (signal.SIGTERM, signal.SIGKILL):
-                try:
-                    os.killpg(proc.pid, s)
-                except ProcessLookupError:
-                    logger.debug("Process closed already")
-                    try:
-                        os.killpg(proc.pid, 0)
-                        proc.wait()
-                        return None
-                    except ProcessLookupError:
-                        continue
-                try:
-                    proc.wait(timeout)
-                except subprocess.TimeoutExpired:
-                    logger.debug("Signal %d failed", s)
+                return
+
+            try:
+                proc.wait(timeout)
+                return
+            except subprocess.TimeoutExpired:
+                logger.debug(
+                    "SIGTERM timed out for process group %d",
+                    proc.pid,
+                )
+
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             proc.wait()
 
     @staticmethod
